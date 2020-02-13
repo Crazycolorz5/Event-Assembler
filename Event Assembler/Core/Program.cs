@@ -37,13 +37,15 @@ namespace Nintenlord.Event_Assembler.Core
 				GenPNHighlight,
 				Assemble,
 				Disassemble,
+				Compile,
 			}
 
 			public RunExecType execType;
 
 			public bool quiet = false;
+            public bool org = true;
 
-			public string language = null;
+            public string language = null;
 			public string rawsFolder = Path.Combine (AppDomain.CurrentDomain.BaseDirectory, "Language Raws");
 			public string rawsExtension = ".txt";
 			public bool isDirectory = true;
@@ -107,6 +109,11 @@ namespace Nintenlord.Event_Assembler.Core
 
 		private static int Main (string[] args)
 		{
+			if (args.Length == 0) {
+				Console.WriteLine("No parameter. Please read doc.");
+				return -1;
+			}
+			
 			TextWriterMessageLog writerMessageLog = new TextWriterMessageLog (Console.Error);
 			StreamWriter logWriter = null;
 
@@ -156,7 +163,10 @@ namespace Nintenlord.Event_Assembler.Core
 				case ProgramRunConfig.RunExecType.Assemble:
 					Program.Assemble ((ILog)writerMessageLog);
 					break;
-
+				
+				case ProgramRunConfig.RunExecType.Compile:
+					Program.Compile ((ILog)writerMessageLog);
+					break;
 				}
 			}
 
@@ -252,6 +262,11 @@ namespace Nintenlord.Event_Assembler.Core
 			case "disassemble":
 				result.execType = ProgramRunConfig.RunExecType.Disassemble;
 				break;
+				
+			case "C":
+			case "compile":
+				result.execType = ProgramRunConfig.RunExecType.Compile;
+				break;
 
 			default:
 				log.AddError ("Unknown run mode `{0}`", it.Current);
@@ -264,6 +279,7 @@ namespace Nintenlord.Event_Assembler.Core
 			switch (result.execType) {
 
 			case ProgramRunConfig.RunExecType.Assemble:
+			case ProgramRunConfig.RunExecType.Compile:
 			case ProgramRunConfig.RunExecType.Disassemble:
 				if (!it.MoveNext ()) {
 					log.AddError ("You need to specify a game for which to (dis)assemble!");
@@ -284,8 +300,15 @@ namespace Nintenlord.Event_Assembler.Core
 					continue;
 				}
 
-				// -raws <file>
-				if (it.Current.Equals ("-raws")) {
+                // ignore ORG
+                if (it.Current.Equals("-ignoreORG"))
+                {
+                    result.org = false;
+                    continue;
+                }
+
+                // -raws <file>
+                if (it.Current.Equals ("-raws")) {
 					if (!it.MoveNext ()) {
 						log.AddError ("`-raws` passed without specifying a path.");
 						return null;
@@ -716,8 +739,7 @@ namespace Nintenlord.Event_Assembler.Core
 							
 							EACodeLanguage language = Program.languages [Program.RunConfig.language];
 
-							EAExpressionAssembler assembler = new EAExpressionAssembler (language.CodeStorage, new TokenParser<int> (new Func<string, int> (StringExtensions.GetValue)));
-							assembler.Assemble (inputStream, output, log);
+							language.Assemble (inputStream, output, log);
 
 							if (Program.RunConfig.symbolOutputFile != null) {
 								// Outputting global symbols to another file
@@ -728,7 +750,7 @@ namespace Nintenlord.Event_Assembler.Core
 
 									using (FileStream fileStream = File.OpenWrite (Program.RunConfig.symbolOutputFile))
 									using (StreamWriter symOut = new StreamWriter (fileStream))
-										foreach (KeyValuePair<string, int> symbol in assembler.GetGlobalSymbols())
+										foreach (KeyValuePair<string, int> symbol in language.GetGlobalSymbols())
 											symOut.WriteLine ("{0}={1}", symbol.Key, symbol.Value.ToHexString ("$"));
 								} catch (Exception e) {
 									log.AddError (e.ToString ());
@@ -739,6 +761,98 @@ namespace Nintenlord.Event_Assembler.Core
 						if (log.ErrorCount == 0)
 							using (Stream stream = (Stream)File.OpenWrite (outFile))
 								changeStream.WriteToFile (stream);
+					}
+				}
+
+				if (depMaker != null) {
+					try {
+						depMaker.GenerateMakeDependencies (log);
+					} catch (Exception e) {
+						log.AddError (e.ToString ());
+					}
+				}
+			}
+
+			if (inputIsFile)
+				input.Close ();
+		}
+		
+		private static void Compile (ILog log)
+		{
+			TextReader input;
+			bool inputIsFile;
+
+			if (Program.RunConfig.inputFile != null) {
+				input = File.OpenText (Program.RunConfig.inputFile);
+				inputIsFile = false;
+			} else {
+				input = Console.In;
+				inputIsFile = true;
+			}
+
+			using (IDirectivePreprocessor preprocessor = new Preprocessor (log)) {
+				// preprocessor.AddReserved (eaCodeLanguage.GetCodeNames ());
+				preprocessor.AddDefined (new string[] { "_" + Program.RunConfig.language + "_", "_EA_" });
+
+				DependencyMakingIncludeListener depMaker = null;
+
+				if (Program.RunConfig.ppDepEnable) {
+					depMaker = new DependencyMakingIncludeListener ();
+					preprocessor.IncludeListener = depMaker;
+				}
+
+				using (IInputStream inputStream = new PreprocessingInputStream (input, preprocessor)) {
+					if (Program.RunConfig.ppSimulation) {
+						// preprocess to null output
+						while (inputStream.ReadLine () != null)
+							;
+					} else {
+						if (Program.RunConfig.outputFile == null) {
+							log.AddError ("No output file specified for assembly.");
+							return;
+						}
+
+						string outFile = Program.RunConfig.outputFile;
+
+						if (File.Exists (outFile) && File.GetAttributes (outFile).HasFlag ((Enum)FileAttributes.ReadOnly)) {
+							log.AddError ("File `{0}` exists and cannot be written to.", outFile);
+							return;
+						}
+
+						using (StreamWriter output = new StreamWriter(outFile, false, Encoding.Default)) {
+                            // Make entry point label global to call in C source file
+                            //TODO support ARM?
+                            output.WriteLine("\t.section .rodata");
+                            output.WriteLine("\t.align 2");
+                            output.WriteLine("\t.global " + Path.GetFileNameWithoutExtension(outFile).Replace(".", "_"));
+                            output.WriteLine(Path.GetFileNameWithoutExtension(outFile).Replace(".", "_") + ":");
+
+                            if (!Program.CodesLoaded)
+								LoadCodes (false);
+							
+							// Console.WriteLine("language: {0}", Program.RunConfig.language);
+							EACodeLanguage language = Program.languages [Program.RunConfig.language];
+
+							language.Compile (inputStream, output, log);
+
+							if (Program.RunConfig.symbolOutputFile != null) {
+								// Outputting global symbols to another file
+
+								try {
+									if (File.Exists (Program.RunConfig.symbolOutputFile))
+										File.Delete (Program.RunConfig.symbolOutputFile);
+
+									using (FileStream fileStream = File.OpenWrite (Program.RunConfig.symbolOutputFile))
+									using (StreamWriter symOut = new StreamWriter (fileStream))
+										foreach (KeyValuePair<string, int> symbol in language.GetGlobalSymbols())
+											symOut.WriteLine ("{0}={1}", symbol.Key, symbol.Value.ToHexString ("$"));
+								} catch (Exception e) {
+									log.AddError (e.ToString ());
+								}
+							}
+							
+							output.Close();
+						}
 					}
 				}
 
@@ -880,11 +994,12 @@ namespace Nintenlord.Event_Assembler.Core
 					break;
 
 				case "FE7":
+				case "FE7J":
 					pointerList = FE7CodeLanguage.PointerList;
 					break;
 
 				case "FE8":
-					// pointerList = DummyCodeLanguage.PointerList;
+				case "FE8J":
 					pointerList = FE8CodeLanguage.PointerList;
 					break;
 

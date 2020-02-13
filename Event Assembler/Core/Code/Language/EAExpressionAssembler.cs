@@ -34,7 +34,13 @@ namespace Nintenlord.Event_Assembler.Core.Code.Language
 		private const string offsetPopper = "POP";
 		private const string assertion = "ASSERT";
 		private const string protectCode = "PROTECT";
-		private readonly IParser<Token, IExpression<int>> parser;
+        private const string ThumbAssembly = "T";
+        private const string ARMAssembly = "A";
+        private const string ExternSymbol = "EXTERN";
+        private const string GlobalSymbol = "GLOBAL";
+        private const string sectionMaker = "SECTION";
+        private const string sectionEnd = "ENDSECTION";
+        private readonly IParser<Token, IExpression<int>> parser;
 		private readonly ICodeTemplateStorer storer;
 		private ILog log;
 
@@ -80,7 +86,7 @@ namespace Nintenlord.Event_Assembler.Core.Code.Language
 
 			if (log.ErrorCount == 0) {
 				this.currentOffset = 0;
-				ExecuteLayoutPass (expression, null);
+				ExecuteLayoutPass<BinaryWriter> (expression, null, output);
 			}
 
 			if (log.ErrorCount == 0) {
@@ -88,8 +94,46 @@ namespace Nintenlord.Event_Assembler.Core.Code.Language
 				ExecuteWritePass (output, expression, null);
 			}
 		}
+		
+		public void Compile(IPositionableInputStream input, TextWriter output, ILog log) {
+			this.log = log;
 
-		private void ExecuteLayoutPass(IExpression<int> expression, ScopeStructure<int> scope) {
+			this.offsetHistory = new Stack<int> ();
+			this.protectedRegions = new List<Tuple<int, int>> ();
+
+			this.scopeStructures = new Dictionary<IExpression<int>, ScopeStructure<int>> ();
+
+			TokenScanner tokenScanner = new TokenScanner (input);
+
+			if (!tokenScanner.MoveNext ())
+				return;
+
+			Match<Token> match;
+			IExpression<int> expression = parser.Parse (tokenScanner, out match);
+
+			if (!match.Success) {
+				log.AddError (match.Error);
+				return;
+			}
+
+			if (!tokenScanner.IsAtEnd && tokenScanner.Current.Type != TokenType.EndOfStream) {
+				AddNotReachedEnd (tokenScanner.Current);
+				return;
+			}
+
+			if (log.ErrorCount == 0) {
+				this.currentOffset = 0;
+                // DeclareExternASMCLabels(ExecuteLayoutPass<TextWriter> (expression, null,output), output);
+                ExecuteLayoutPass<TextWriter>(expression, null, output);
+            }
+            
+            if (log.ErrorCount == 0) {
+				this.currentOffset = 0;
+				ExecuteWritePass (output, expression, null);
+			}
+		}
+
+		private ScopeStructure<int> ExecuteLayoutPass<T>(IExpression<int> expression, ScopeStructure<int> scope, T output) {
 			switch (expression.Type) {
 
 			case EAExpressionType.Scope:
@@ -98,7 +142,7 @@ namespace Nintenlord.Event_Assembler.Core.Code.Language
 					scopeStructures [(Scope<int>)expression] = newScope;
 
 					foreach (IExpression<int> child in expression.GetChildren())
-						ExecuteLayoutPass (child, newScope);
+						ExecuteLayoutPass (child, newScope, output);
 
 					break;
 				}
@@ -109,6 +153,9 @@ namespace Nintenlord.Event_Assembler.Core.Code.Language
 
 					if (code.IsEmpty || HandleBuiltInCodeLayout (code, scope))
 						break;
+
+                    if (code.CodeName.Name == "ASMC" && code.Parameters[0].ToString() != "" && !System.Text.RegularExpressions.Regex.IsMatch(code.Parameters[0].ToString(), @"\A\b(0[xX])?[0-9a-fA-F]+\b\Z"))
+                        scope.RegisterASMCLabel(code.Parameters[0].ToString());
 
 					Types.Type[] sig = ((IEnumerable<IExpression<int>>)code.Parameters).Select (new Func<IExpression<int>, Types.Type> (Types.Type.GetType<int>)).ToArray ();
 
@@ -134,6 +181,9 @@ namespace Nintenlord.Event_Assembler.Core.Code.Language
 
 			case EAExpressionType.Labeled:
 				{
+					// record label names
+					scope.SetLocalLabelAddress(((LabelExpression<int>)expression).LabelName, currentOffset);
+					
 					CanCauseError err = scope.AddNewSymbol (((LabelExpression<int>)expression).LabelName, new ValueExpression<int> (this.currentOffset, new FilePosition ()));
 
 					if (err.CausedError)
@@ -172,9 +222,27 @@ namespace Nintenlord.Event_Assembler.Core.Code.Language
 				throw new ArgumentException ("Badly formed tree.");
 
 			}
-		}
 
-		private void ExecuteWritePass(BinaryWriter output, IExpression<int> expression, ScopeStructure<int> scope) {
+            // DeclareExternASMCLabels<T>(scope, output);
+            return scope;
+        }
+
+        // private void DeclareExternASMCLabels<T>(ScopeStructure<int> scope, T output)
+        private void DeclareExternASMCLabels(ScopeStructure<int> scope, TextWriter output)
+        {
+            //if (output is TextWriter)
+            if (scope != null)
+                foreach (var label in scope.GetRegisteredASMCLabels())
+                {
+                    if (!scope.IsLocalLabelExisted(label))
+                    {
+                        //(output as TextWriter).WriteLine("\t.global " + label);
+                        output.WriteLine("\t.global " + label);
+                    }
+                }
+        }
+
+        private void ExecuteWritePass(BinaryWriter output, IExpression<int> expression, ScopeStructure<int> scope) {
 			// This is to be executed *after* the layout pass
 
 			switch (expression.Type) {
@@ -212,7 +280,7 @@ namespace Nintenlord.Event_Assembler.Core.Code.Language
 
 					ICodeTemplate template = templateError.Result;
 
-					CanCauseError<byte[]> data = template.GetData (code.Parameters, x => this.GetSymbolValue (scope, x));
+					CanCauseError<byte[]> data = template.GetData (code.Parameters, x => this.GetSymbolValue (scope, x), scope);
 
 					if (data.CausedError)
 						// Can't compute code data, so we err
@@ -245,7 +313,165 @@ namespace Nintenlord.Event_Assembler.Core.Code.Language
 
 			}
 		}
+		
+		private void ExecuteWritePass(TextWriter output, IExpression<int> expression, ScopeStructure<int> scope) {
+			// This is to be executed *after* the layout pass
 
+			switch (expression.Type) {
+
+			case EAExpressionType.Scope:
+				{
+					ScopeStructure<int> newScope = scopeStructures [(Scope<int>)expression];
+
+					foreach (IExpression<int> child in expression.GetChildren())
+						ExecuteWritePass (output, child, newScope);
+
+					break;
+				}
+
+			case EAExpressionType.Code:
+				{
+					Code<int> code = expression as Code<int>;
+					
+					// alignment. ALIGN 2^n => .align n
+					if(!code.IsEmpty && code.CodeName.Name == offsetAligner && code.ParameterCount.IsInRange(1, 1) && !(code.Parameters[0] is ExpressionList<int>)) 
+						output.WriteLine("\t.align {0}", Math.Ceiling(Math.Log(Folding.Fold (code.Parameters[0], (x => this.GetSymbolValue (scope, x))).Result, 2)));
+											
+					if (code.IsEmpty || HandleBuiltInCodeWrite (code, scope, output))
+						break;
+
+                    bool TFlag = false;
+                    // bool ExtFlag = false;
+
+                    if (code.CodeName.Name == "ASMC")
+                    {
+                        if (code.Parameters.Length > 0 && code.Parameters[0].ToString() != "" && !scope.IsLocalLabelExisted(code.Parameters[0].ToString()) && !System.Text.RegularExpressions.Regex.IsMatch(code.Parameters[0].ToString(), @"\A\b(0[xX])?[0-9a-fA-F]+\b\Z"))
+                        {
+                            // ExtFlag = true;
+                        }
+                        else
+                        {
+                            TFlag = true;
+                        }
+                    }
+
+					// Maybe all of this template lookup up can be made faster by
+					// storing the found template from the layout pass?
+
+					Types.Type[] sig = ((IEnumerable<IExpression<int>>)code.Parameters).Select (new Func<IExpression<int>, Types.Type> (Types.Type.GetType<int>)).ToArray ();
+
+					CanCauseError<ICodeTemplate> templateError = this.storer.FindTemplate (code.CodeName.Name, sig);
+
+					if (templateError.CausedError) {
+						AddError<int, ICodeTemplate> ((IExpression<int>)code, templateError);
+						break;
+					}
+
+					// We won't check for alignment as it should already have been done in the layout pass
+
+					ICodeTemplate template = templateError.Result;
+
+                    /*if (template is CodeTemplate && code.Parameters.Length > 0)
+                    {
+                        for (int i = 0; i < code.Parameters.Length; i++)
+                        {
+                            if(scope.GetRegisteredASMCLabels().Exists(o => o == code.Parameters[i].ToString()))
+                            {
+                                (template as CodeTemplate).AddExternLabel(i, code.Parameters[i].ToString());
+                            }
+                        }
+                    }*/
+                    
+                    CanCauseError<byte[]> data = template.GetData (code.Parameters, x => this.GetSymbolValue (scope, x), scope);
+
+                    Dictionary<int, string> localLabels = template.GetLocalLabels ();
+                    Dictionary<int, string> externLabels = template.GetExternLabels();
+                    var labels = localLabels.Union(externLabels).ToList();
+
+                    if (data.CausedError)
+						// Can't compute code data, so we err
+						this.AddError<int, byte[]> (expression, data);
+					else {
+						// Write data
+                        if(labels.Count == 0)
+                            TryWrite(output, expression, currentOffset, data.Result);
+                        else {
+                                int startIndex = 0;
+                                foreach (KeyValuePair<int, string> k in labels)
+                                {
+                                    // Console.WriteLine("pos:" + k.Key + " label:" + k.Value);
+                                    if (k.Key - startIndex > 0)
+                                        TryWrite(output, expression, currentOffset, data.Result.Skip(startIndex).Take(k.Key - startIndex).ToArray());
+                                    startIndex = k.Key + 4;
+
+                                    if(TFlag == true && scope.IsLocalLabelExisted(k.Value))
+                                    {
+                                        output.WriteLine("\t.word {0}+1", k.Value);
+                                        TFlag = false;
+                                    }
+                                    else
+                                        output.WriteLine("\t.word {0}", k.Value);
+                                }
+                                if (data.Result.Length - startIndex > 4)
+                                    TryWrite(output, expression, currentOffset, data.Result.Skip(startIndex).Take(data.Result.Length - startIndex).ToArray());
+                            }
+                          }
+
+                    this.currentOffset += data.Result.Length;
+
+                        /*for (int i = 0; i < code.Parameters.Length; i++)
+                        {
+                            // Console.WriteLine(code.Parameters[i]);
+                            if (scope.IsLabelExisted(code.Parameters[i].ToString()))
+                            {
+                                output.WriteLine("\t.word {0}", code.Parameters[i]);
+                                this.currentOffset += 4;
+                            }
+                            else
+                            {
+                                IExpression<int>[] parameter = new IExpression<int>[] { code.Parameters[i] };
+                                CanCauseError<byte[]> data = template.GetDataUnit(parameter, x => this.GetSymbolValue(scope, x));
+                                if (data.CausedError)
+                                    // Can't compute code data, so we err
+                                    this.AddError<int, byte[]>(expression, data);
+                                else
+                                {
+                                    // Write data
+                                    TryWrite(output, expression, currentOffset, data.Result);
+                                    this.currentOffset += data.Result.Length;
+                                }
+                            }
+                        }*/
+
+                        break;
+				}
+
+			case EAExpressionType.RawData:
+				{
+					RawData<int> rawData = (RawData<int>)expression;
+
+					TryWrite (output, expression, this.currentOffset, rawData.Data);
+					this.currentOffset += rawData.Data.Length;
+
+					break;
+				}
+
+			case EAExpressionType.Labeled:
+					
+					//TODO Add label attribute: ".global LabelName"
+					output.WriteLine(((LabelExpression<int>)expression).LabelName + ":");
+					
+					break;
+			case EAExpressionType.Assignment:
+					//TODO .set/.equ, but it doesn't matter
+				break;
+
+			default:
+				throw new ArgumentException ("Badly formed tree.");
+
+			}
+		}
+		
 		private bool SyncOutputCursorWithOffset(BinaryWriter output, long offset) {
 			if (output.BaseStream.Position != offset) {
 				if (!output.BaseStream.CanSeek)
@@ -256,7 +482,7 @@ namespace Nintenlord.Event_Assembler.Core.Code.Language
 
 			return true;
 		}
-
+		
 		private bool TryWrite(BinaryWriter output, IExpression<int> expression, long offset, byte[] data) {
 			if (!SyncOutputCursorWithOffset (output, (long)this.currentOffset)) {
 				this.AddError<int> (expression, "Stream cannot be seeked.");
@@ -272,6 +498,16 @@ namespace Nintenlord.Event_Assembler.Core.Code.Language
 			return true;
 		}
 
+		private bool TryWrite(TextWriter output, IExpression<int> expression, long offset, byte[] data) {
+			if (IsProtected (this.currentOffset, data.Length)) {
+				this.AddError<int> (expression, "Attempting to modify protected memory at " + this.currentOffset.ToHexString ("$") + " with code of length " + data.Length);
+				return false;
+			}
+
+			output.WriteLine ("\t.byte 0x" + BitConverter.ToString(data).Replace("-", ", 0x"));
+			return true;
+		}
+		
 		private bool HandleBuiltInCodeLayout(Code<int> code, ScopeStructure<int> scope) {
 			switch (code.CodeName.Name) {
 
@@ -304,13 +540,92 @@ namespace Nintenlord.Event_Assembler.Core.Code.Language
 				HandleBuiltInProtect (code, scope);
 				return true;
 
+            case ThumbAssembly:
+            case ARMAssembly:
+                return true;
+
+            case ExternSymbol:
+                CanCauseError err = scope.AddNewSymbol(code.Parameters[0].ToString(), new ValueExpression<int>(-1, new FilePosition()));
+
+                if (err.CausedError)
+                    AddWarning((IExpression<int>)code, err.ErrorMessage);
+                return true;
+
+            case GlobalSymbol:
+            case sectionMaker:
+            case sectionEnd:
+                    return true;
+
 			default:
 				return false;
 
 			}
 		}
 
-		private bool HandleBuiltInCodeWrite(Code<int> code, ScopeStructure<int> scope) {
+        private void PrintAssemblyCode(Code<int> code, ScopeStructure<int> scope, TextWriter output)
+        {
+            output.Write("\t");
+            for (int i = 0; i < code.Parameters.Length; i++)
+            {
+                // support EA macro in inline assembly
+                if (!scope.IsLocalLabelExisted(code.Parameters[i].ToString()) && !scope.GetSymbolValue(code.Parameters[i].ToString()).CausedError)
+                {
+                    output.Write(" #0x{0:X}", Folding.Fold(code.Parameters[i], (x => this.GetSymbolValue(scope, x))).Result);
+                }
+                else
+                {
+                    output.Write(" {0}", code.Parameters[i].ToString());
+                }
+
+                if (i == 0)
+                {
+                    output.Write("\t");
+                    if (code.Parameters[0].ToString() == "push" || code.Parameters[0].ToString() == "pop")
+                        output.Write("{");
+                }
+                if (i != code.Parameters.Length - 1)
+                {
+                    if (i != 0)
+                        output.Write(",");
+
+                    if (code.Parameters[0].ToString().StartsWith("ldr") || code.Parameters[0].ToString().StartsWith("str"))
+                    {
+                        if(i == 1)
+                            output.Write("[");
+                    }
+
+                    // Console.WriteLine(code.Parameters[i + 1].ToString());
+                    if (System.Text.RegularExpressions.Regex.IsMatch(code.Parameters[i + 1].ToString(), @"^\d+$"))
+                        output.Write("#");
+                }
+                    else
+                    {
+                        if (code.Parameters[0].ToString() == "push" || code.Parameters[0].ToString() == "pop")
+                            output.Write(" }");
+                        else
+                            if (code.Parameters[0].ToString().StartsWith("ldr") || code.Parameters[0].ToString().StartsWith("str"))
+                                output.Write(" ]");
+                        output.Write("\n");
+                    }
+                    
+                
+            }
+        }
+
+        private void HandleThumbAssembly(Code<int> code, ScopeStructure<int> scope, TextWriter output)
+        {
+            // output.WriteLine("\t .thumb");
+            // output.WriteLine("\t .thumb_func");
+            PrintAssemblyCode(code, scope, output);
+        }
+
+        private void HandleARMAssembly(Code<int> code, ScopeStructure<int> scope, TextWriter output)
+        {
+            // output.WriteLine("\t .arm");
+            PrintAssemblyCode(code, scope, output);
+        }
+
+        private bool HandleBuiltInCodeWrite(Code<int> code, ScopeStructure<int> scope, TextWriter output) {
 			switch (code.CodeName.Name) {
 
 			case messagePrinterCode:
@@ -332,15 +647,19 @@ namespace Nintenlord.Event_Assembler.Core.Code.Language
 
 			case offsetChanger:
 				HandleBuiltInOffsetChange (code, scope);
-				return true;
+                if(Program.RunConfig.org)
+                    output.WriteLine(".previous\n@section org_{0:X} 0x{0:X}+0x8000000", Convert.ToInt32(code.Parameters[0].ToString()));
+                return true;
 
 			case offsetPusher:
 				HandleBuiltInOffsetPush (code, scope);
-				return true;
+                output.WriteLine(".pushsection");
+                return true;
 
 			case offsetPopper:
 				HandleBuiltInOffsetPop (code, scope);
-				return true;
+                output.WriteLine(".popsection");
+                return true;
 
 			case assertion:
 				HandleBuiltInAssert (code, scope);
@@ -349,13 +668,92 @@ namespace Nintenlord.Event_Assembler.Core.Code.Language
 			case protectCode:
 				return true;
 
-			default:
-				return false;
+            case ThumbAssembly:
+                HandleThumbAssembly (code, scope, output);
+                return true;
+
+            case ARMAssembly:
+                HandleARMAssembly (code, scope, output);
+                return true;
+
+            case ExternSymbol:
+                output.WriteLine("\t.extern {0}", code.Parameters[0]);
+                return true;
+
+            case GlobalSymbol:
+                output.WriteLine("\t.global {0}", code.Parameters[0]);
+                return true;
+
+            case sectionMaker:
+                output.WriteLine("@section {0} 0x{1:X}", code.Parameters[0], Convert.ToInt32(code.Parameters[1].ToString()));
+                return true;
+
+            case sectionEnd:
+                output.WriteLine(".previous");
+                return true;
+
+                default:
+			return false;
 
 			}
 		}
 
-		private void HandleBuiltInOffsetChange(Code<int> code, ScopeStructure<int> scope) {
+        private bool HandleBuiltInCodeWrite(Code<int> code, ScopeStructure<int> scope)
+        {
+            switch (code.CodeName.Name)
+            {
+
+                case messagePrinterCode:
+                    this.log.AddMessage(this.ExpressionToString((IExpression<int>)code, scope).Substring(code.CodeName.Name.Length + 1));
+                    return true;
+
+                case errorPrinterCode:
+                    this.log.AddError(this.ExpressionToString((IExpression<int>)code, scope).Substring(code.CodeName.Name.Length + 1));
+                    return true;
+
+                case warningPrinterCode:
+                    this.log.AddWarning(this.ExpressionToString((IExpression<int>)code, scope).Substring(code.CodeName.Name.Length + 1));
+                    return true;
+
+                case currentOffsetCode:
+                case offsetAligner:
+                    HandleBuiltInOffsetAlign(code, scope);
+                    return true;
+
+                case offsetChanger:
+                    HandleBuiltInOffsetChange(code, scope);
+                    return true;
+
+                case offsetPusher:
+                    HandleBuiltInOffsetPush(code, scope);
+                    return true;
+
+                case offsetPopper:
+                    HandleBuiltInOffsetPop(code, scope);
+                    return true;
+
+                case assertion:
+                    HandleBuiltInAssert(code, scope);
+                    return true;
+
+                case protectCode:
+                    return true;
+
+                case ThumbAssembly:
+                case ARMAssembly:
+                case ExternSymbol:
+                case GlobalSymbol:
+                case sectionMaker:
+                case sectionEnd:
+                    return true;
+
+                default:
+                    return false;
+
+            }
+        }
+
+        private void HandleBuiltInOffsetChange(Code<int> code, ScopeStructure<int> scope) {
 			if (code.ParameterCount.IsInRange (1, 1) && !(code [0] is ExpressionList<int>)) {
 				CanCauseError<int> canCauseError = Folding.Fold (code [0], (x => this.GetSymbolValue (scope, x)));
 				if (!canCauseError.CausedError)

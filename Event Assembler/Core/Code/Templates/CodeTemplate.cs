@@ -37,6 +37,23 @@ namespace Nintenlord.Event_Assembler.Core.Code.Templates
     private readonly List<TemplateParameter> fixedParameters;
     private IPointerMaker pointerMaker;
     private readonly StringComparer comparer;
+    private Dictionary<int, string> localLabels;
+    private Dictionary<int, string> externLabels;
+
+    public Dictionary<int, string> GetLocalLabels()
+    {
+        return localLabels.OrderBy(o => o.Key).ToDictionary(o => o.Key, p => p.Value);
+    }
+
+    public Dictionary<int, string> GetExternLabels()
+    {
+        return externLabels.OrderBy(o => o.Key).ToDictionary(o => o.Key, p => p.Value);
+    }
+
+        public void AddExternLabel(int pos, string labelName)
+    {
+        externLabels.Add(pos, labelName);
+    }
 
     public IPointerMaker PointerMaker
     {
@@ -190,6 +207,8 @@ namespace Nintenlord.Event_Assembler.Core.Code.Templates
       this.parameters = new List<TemplateParameter>(parameters.Count<TemplateParameter>());
       this.fixedParameters = new List<TemplateParameter>(parameters.Count<TemplateParameter>());
       this.baseData = new byte[this.LengthInBytes];
+      localLabels = new Dictionary<int, string> { };
+      externLabels = new Dictionary<int, string> { };      
       if (id != 0)
       {
         this.baseData[0] = (byte) (id & (int) byte.MaxValue);
@@ -266,18 +285,32 @@ namespace Nintenlord.Event_Assembler.Core.Code.Templates
       return code;
     }
 
-    private CanCauseError<byte[]> GetDataUnit(IExpression<int>[] parameters, Func<string, int?> getSymbolValue)
+    public CanCauseError<byte[]> GetDataUnit(IExpression<int>[] parameters, Func<string, int?> getSymbolValue, ScopeStructure<int> scope)
     {
       byte[] code = this.baseData.Clone() as byte[];
+      localLabels.Clear();
+      externLabels.Clear();
       for (int index = 0; index < parameters.Length; ++index)
       {
         TemplateParameter paramTemp = this[index];
         if (paramTemp.lenght > 0)
         {
-          CanCauseError<int[]> values = CodeTemplate.GetValues(parameters[index], paramTemp, getSymbolValue, this.pointerMaker);
-          if (values.CausedError)
-            return values.ConvertError<byte[]>();
-          paramTemp.InsertValues(values.Result, code);
+               if (scope.GetRegisteredASMCLabels().Exists(o => o == parameters[index].ToString()) && !scope.IsLocalLabelExisted(parameters[index].ToString()))
+               {
+                   paramTemp.InsertValues(new int [1], code);
+                   AddExternLabel(paramTemp.position / 8, parameters[index].ToString());
+               }
+               else
+               {
+                   CanCauseError<int[]> values = CodeTemplate.GetValues(parameters[index], paramTemp, getSymbolValue, this.pointerMaker);
+                   if (values.CausedError)
+                        return values.ConvertError<byte[]>();
+                   paramTemp.InsertValues(values.Result, code);
+                   if (scope.IsLocalLabelExisted(parameters[index].ToString()))
+                   {
+                       localLabels.Add(paramTemp.position / 8, parameters[index].ToString());
+                   }
+                }
         }
       }
       return (CanCauseError<byte[]>) code;
@@ -300,7 +333,7 @@ namespace Nintenlord.Event_Assembler.Core.Code.Templates
       }
       else
       {
-        CanCauseError<int> canCauseError = Folding.Fold(parameter, getSymbolValue);
+      	CanCauseError<int> canCauseError = Folding.Fold(parameter, getSymbolValue);
         if (canCauseError.CausedError)
           return canCauseError.ConvertError<int[]>();
         if (paramTemp.pointer && pointerMaker != null)
@@ -411,10 +444,10 @@ namespace Nintenlord.Event_Assembler.Core.Code.Templates
       return this.LengthInBytes;
     }
 
-    public CanCauseError<byte[]> GetData(IExpression<int>[] code, Func<string, int?> getSymbolValue)
+    public CanCauseError<byte[]> GetData(IExpression<int>[] code, Func<string, int?> getSymbolValue, ScopeStructure<int> scope)
     {
       if (!canBeRepeated)
-        return GetDataUnit(code, getSymbolValue);
+        return GetDataUnit(code, getSymbolValue, scope);
 
       if (code.Length == 0)
         return CanCauseError<byte[]>.Error("Encountered {0} code with no parameters", Name);
@@ -424,7 +457,7 @@ namespace Nintenlord.Event_Assembler.Core.Code.Templates
 
       for (int index = 0; index < num; ++index)
       {
-        CanCauseError<byte[]> dataUnit = GetDataUnit(new IExpression<int>[1]{ code[index] }, getSymbolValue);
+        CanCauseError<byte[]> dataUnit = GetDataUnit(new IExpression<int>[1]{ code[index] }, getSymbolValue, scope);
 
         if (dataUnit.CausedError)
           return dataUnit.ConvertError<byte[]>();

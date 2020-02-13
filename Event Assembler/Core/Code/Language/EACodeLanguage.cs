@@ -4,6 +4,7 @@ using Nintenlord.Event_Assembler.Core.Code.Templates;
 using Nintenlord.Event_Assembler.Core.IO.Input;
 using Nintenlord.Event_Assembler.Core.IO.Logs;
 using Nintenlord.Parser;
+using Nintenlord.Utility.Strings;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -104,13 +105,23 @@ namespace Nintenlord.Event_Assembler.Core.Code.Language
         assertion,
         protectCode
     };
-      this.assembler = new EAExpressionAssembler(this.codeStorage, (IParser<Token, IExpression<int>>) null);
+      this.assembler = new EAExpressionAssembler(this.codeStorage, new TokenParser<int> (new Func<string, int> (StringExtensions.GetValue)));
       this.disassembler = new EACodeLanguageDisassembler(this.codeStorage, pointerMaker, pointerList);
     }
 
     public void Assemble(IPositionableInputStream input, BinaryWriter output, ILog messageLog)
     {
       this.assembler.Assemble(input, output, messageLog);
+    }
+
+    public void Compile(IPositionableInputStream input, TextWriter output, ILog messageLog)
+    {
+      this.assembler.Compile(input, output, messageLog);
+    }
+
+    public IEnumerable<KeyValuePair<string, int>> GetGlobalSymbols ()
+    {
+      return this.assembler.GetGlobalSymbols();
     }
 
     public IEnumerable<string[]> Disassemble(byte[] code, int offset, int length, Priority priority, bool addEndingLinest, ILog messageLog)

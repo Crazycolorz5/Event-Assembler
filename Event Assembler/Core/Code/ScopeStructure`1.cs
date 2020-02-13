@@ -8,6 +8,7 @@ using Nintenlord.Collections.Trees;
 using Nintenlord.Event_Assembler.Core.Code.Language.Expression;
 using Nintenlord.Utility;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Nintenlord.Event_Assembler.Core.Code
 {
@@ -16,12 +17,16 @@ namespace Nintenlord.Event_Assembler.Core.Code
     private readonly ScopeStructure<T> ParentScope;
     private List<ScopeStructure<T>> childScopes;
     private Dictionary<string, IExpression<T>> definedSymbols;
+    private Dictionary <string, int> localLabels; // local labels
+    private List<string> ASMCLabels; // extern labels
     
     public ScopeStructure(ScopeStructure<T> parentScope)
     {
       this.ParentScope = parentScope;
       this.childScopes = new List<ScopeStructure<T>>();
       this.definedSymbols = new Dictionary<string, IExpression<T>>();
+      this.localLabels = new Dictionary<string, int>();
+      this.ASMCLabels = new List<string>();
     }
 
     public void AddChildScope(ScopeStructure<T> newChildScope)
@@ -49,7 +54,39 @@ namespace Nintenlord.Event_Assembler.Core.Code
       definedSymbols[symbol] = value;
       return CanCauseError.NoError;
     }
+    
+    public int GetLocalLabelAddress(string labelName)
+    {
+    	if(localLabels.ContainsKey(labelName))
+    		return localLabels[labelName];
+    	return 0;
+    }
+    
+    public void SetLocalLabelAddress(string labelName, int labelAddress)
+    {
+    	if(localLabels.ContainsKey(labelName))
+    		localLabels[labelName] = labelAddress;
+    	else
+    		localLabels.Add(labelName, labelAddress);
+    }
 
+    public bool IsLocalLabelExisted(string labelName)
+    {
+        if (localLabels.ContainsKey(labelName))
+            return true;
+        return false;
+    }
+
+    public void RegisterASMCLabel(string labelName)
+    {
+        ASMCLabels.Add(labelName);
+    }
+
+    public List<string> GetRegisteredASMCLabels()
+    {
+        return ASMCLabels.Distinct().ToList();
+    }
+    
     public bool IsGlobalScope()
     {
       return (ParentScope == null);
