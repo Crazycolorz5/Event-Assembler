@@ -22,12 +22,6 @@ namespace Nintenlord.Graph
         public static bool HasCycle<TNode>(this IGraph<TNode> graph, out List<TNode> cycle)
         {
             throw new NotImplementedException();
-
-            var DFS = graph.DepthFirstTraversalAllNodes(
-                GraphTraversal.DepthFirstTraversalOrdering.PostOrdering);
-
-            //var tree = graph.DepthFirstSearch();
-
         }
 
         /// <summary>

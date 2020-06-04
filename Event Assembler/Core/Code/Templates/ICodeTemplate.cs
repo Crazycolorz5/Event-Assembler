@@ -7,6 +7,7 @@
 using Nintenlord.Event_Assembler.Core.Code.Language.Expression;
 using Nintenlord.Utility;
 using System;
+using System.Collections.Generic;
 
 namespace Nintenlord.Event_Assembler.Core.Code.Templates
 {
@@ -30,7 +31,11 @@ namespace Nintenlord.Event_Assembler.Core.Code.Templates
 
     int GetLengthBytes(IExpression<int>[] parameters);
 
-    CanCauseError<byte[]> GetData(IExpression<int>[] parameters, Func<string, int?> getSymbolValue);
+    CanCauseError<byte[]> GetData(IExpression<int>[] parameters, Func<string, int?> getSymbolValue, ScopeStructure<int> scope);
+
+    Dictionary<int, string> GetLocalLabels();
+
+    Dictionary<int, string> GetExternLabels();
 
     bool Matches(byte[] data, int offset);
 

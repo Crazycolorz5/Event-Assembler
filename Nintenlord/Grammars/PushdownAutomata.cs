@@ -19,8 +19,13 @@ namespace Nintenlord.Grammars
         Stack<TStackSymbol> stack;
         Dictionary<Tuple<TState, TLetter, TStackSymbol>, Tuple<TState, TStackSymbol[]>> transitions;
         Dictionary<Tuple<TState, TStackSymbol>, Tuple<TState, TStackSymbol[]>> epsilonTransitions;
+
+        #pragma warning disable 0649
+
         TStackSymbol stackStartSymbol;
         TState startingState;
+
+        #pragma warning restore 0649
 
         public DeterministicPushdownAutomata()
         {

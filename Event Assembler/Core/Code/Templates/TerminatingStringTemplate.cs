@@ -146,12 +146,22 @@ namespace Nintenlord.Event_Assembler.Core.Code.Templates
       return true;
     }
 
+    public Dictionary<int, string> GetLocalLabels()
+    {
+        return new Dictionary<int, string> { };
+    }
+
+    public Dictionary<int, string> GetExternLabels()
+    {
+        return new Dictionary<int, string> { };
+    }
+
     public int GetLengthBytes(IExpression<int>[] code)
     {
       return (code.Length + 1) * this.parameter.LenghtInBytes;
     }
 
-    public CanCauseError<byte[]> GetData(IExpression<int>[] code, Func<string, int?> getSymbolValue)
+    public CanCauseError<byte[]> GetData(IExpression<int>[] code, Func<string, int?> getSymbolValue, ScopeStructure<int> scope)
     {
       List<byte> byteList = new List<byte>(32);
       for (int index = 0; index < code.Length; ++index)

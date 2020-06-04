@@ -3,7 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using Nintenlord.Utility.Primitives;
-using System.Diagnostics.Contracts;
+using Nintenlord.Utility.Contracts;
 
 namespace Nintenlord.Collections.Lists
 {

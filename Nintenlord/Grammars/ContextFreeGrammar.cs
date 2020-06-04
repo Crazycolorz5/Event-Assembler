@@ -16,10 +16,14 @@ namespace Nintenlord.Grammars
     /// </summary>
     public sealed class ContextFreeGrammar<T>
     {
+        #pragma warning disable 0649
+
         IDictionary<T, T[][]> productions;
         T startingSymbol;
         T[] variables;
         T[] terminals;
+
+        #pragma warning restore 0649
 
         public T[][] this[T variable]
         {
